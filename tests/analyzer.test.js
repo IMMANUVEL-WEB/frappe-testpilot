@@ -203,6 +203,102 @@ describe('frappe-testpilot Phase 4 - Analyze command', () => {
   });
 });
 
+describe('Frappe DocType and hooks checks', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bench-frappe-'));
+  });
+
+  afterEach(() => {
+    if (tmpDir && fs.existsSync(tmpDir)) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  function setupBench() {
+    fs.mkdirSync(path.join(tmpDir, 'apps'));
+    fs.mkdirSync(path.join(tmpDir, 'sites'));
+  }
+
+  it('valid DocType JSON produces no JSON001/FRP001 for correct metadata', () => {
+    setupBench();
+    fs.mkdirSync(path.join(tmpDir, 'apps', 'myapp', 'myapp', 'doctype', 'task'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, 'apps', 'myapp', 'myapp', '__init__.py'), '');
+    fs.writeFileSync(path.join(tmpDir, 'apps', 'myapp', 'myapp', 'doctype', 'task', 'task.json'), JSON.stringify({ name: 'Task', doctype: 'DocType', fields: [] }));
+    const result = runCli(['analyze', 'myapp'], tmpDir);
+    expect(result.stdout).not.toContain('JSON001');
+    expect(result.stdout).not.toContain('FRP001');
+  });
+
+  it('malformed DocType JSON reports JSON001', () => {
+    setupBench();
+    fs.mkdirSync(path.join(tmpDir, 'apps', 'myapp', 'myapp', 'doctype', 'task'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, 'apps', 'myapp', 'myapp', '__init__.py'), '');
+    fs.writeFileSync(path.join(tmpDir, 'apps', 'myapp', 'myapp', 'doctype', 'task', 'task.json'), '{bad');
+    const result = runCli(['analyze', 'myapp'], tmpDir);
+    expect(result.stdout).toContain('JSON001');
+  });
+
+  it('missing name or invalid doctype reports FRP001', () => {
+    setupBench();
+    fs.mkdirSync(path.join(tmpDir, 'apps', 'myapp', 'myapp', 'doctype', 'task'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, 'apps', 'myapp', 'myapp', '__init__.py'), '');
+    fs.writeFileSync(path.join(tmpDir, 'apps', 'myapp', 'myapp', 'doctype', 'task', 'task.json'), JSON.stringify({ name: '', doctype: 'DocType' }));
+    const result = runCli(['analyze', 'myapp'], tmpDir);
+    expect(result.stdout).toContain('FRP001');
+  });
+
+  it('invalid field entries report FRP002 with field index', () => {
+    setupBench();
+    fs.mkdirSync(path.join(tmpDir, 'apps', 'myapp', 'myapp', 'doctype', 'task'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, 'apps', 'myapp', 'myapp', '__init__.py'), '');
+    fs.writeFileSync(path.join(tmpDir, 'apps', 'myapp', 'myapp', 'doctype', 'task', 'task.json'), JSON.stringify({ name: 'Task', doctype: 'DocType', fields: [null, { fieldtype: '' }] }));
+    const result = runCli(['analyze', 'myapp'], tmpDir);
+    expect(result.stdout).toContain('FRP002');
+    expect(result.stdout).toContain('index 0');
+    expect(result.stdout).toContain('index 1');
+  });
+
+  it('works in nested doctype directories', () => {
+    setupBench();
+    fs.mkdirSync(path.join(tmpDir, 'apps', 'myapp', 'myapp', 'doctype', 'project', 'task'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, 'apps', 'myapp', 'myapp', '__init__.py'), '');
+    fs.writeFileSync(path.join(tmpDir, 'apps', 'myapp', 'myapp', 'doctype', 'project', 'task', 'task.json'), JSON.stringify({ name: 'Task', doctype: 'DocType' }));
+    const result = runCli(['analyze', 'myapp'], tmpDir);
+    expect(result.stdout).not.toContain('JSON001');
+    expect(result.status).toBe(0);
+  });
+
+  it('valid hooks.py passes without FRP003', () => {
+    setupBench();
+    fs.mkdirSync(path.join(tmpDir, 'apps', 'myapp', 'myapp'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, 'apps', 'myapp', 'myapp', '__init__.py'), '');
+    fs.writeFileSync(path.join(tmpDir, 'apps', 'myapp', 'myapp', 'hooks.py'), "app_name = 'myapp'\n");
+    const result = runCli(['analyze', 'myapp'], tmpDir);
+    expect(result.stdout).not.toContain('FRP003');
+  });
+
+  it('invalid hooks.py reports FRP003', () => {
+    setupBench();
+    fs.mkdirSync(path.join(tmpDir, 'apps', 'myapp', 'myapp'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, 'apps', 'myapp', 'myapp', '__init__.py'), '');
+    fs.writeFileSync(path.join(tmpDir, 'apps', 'myapp', 'myapp', 'hooks.py'), "def foo(\n");
+    const result = runCli(['analyze', 'myapp'], tmpDir);
+    expect(result.stdout).toContain('FRP003');
+    expect(result.status).not.toBe(0);
+  });
+
+  it('no false positives on unrelated JSON files', () => {
+    setupBench();
+    fs.mkdirSync(path.join(tmpDir, 'apps', 'myapp', 'myapp'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, 'apps', 'myapp', 'myapp', '__init__.py'), '');
+    fs.writeFileSync(path.join(tmpDir, 'apps', 'myapp', 'myapp', 'config.json'), '{bad json');
+    const result = runCli(['analyze', 'myapp'], tmpDir);
+    expect(result.stdout).not.toContain('JSON001');
+  });
+});
+
 describe('JUnit XML reporter robustness', () => {
   it('strips ANSI escape sequences and parses with XML parser', () => {
     const xml = createJunitReport({
