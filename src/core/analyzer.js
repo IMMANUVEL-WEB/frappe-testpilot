@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { spawnSync } from 'child_process';
+import { resolveAppPackageDir, getAppFileExists } from './app-paths.js';
 
 export function validateAppName(name) {
   const validAppNameRegex = /^[a-zA-Z][a-zA-Z0-9_-]*$/;
@@ -129,10 +130,20 @@ for filepath in sys.argv[1:]:
 
 export function analyzeAppStructure(appPath, appName) {
   const findings = [];
+  const packageDir = resolveAppPackageDir(appPath);
 
   // Check if it's a Python package
-  const initPath = path.join(appPath, '__init__.py');
-  if (!fs.existsSync(initPath)) {
+  let hasInit = false;
+  let initFileRef = '__init__.py';
+  if (packageDir && fs.existsSync(path.join(packageDir, '__init__.py'))) {
+    hasInit = true;
+    const relInit = path.relative(appPath, path.join(packageDir, '__init__.py'));
+    initFileRef = relInit.replace(/\\/g, '/');
+  } else if (fs.existsSync(path.join(appPath, '__init__.py'))) {
+    hasInit = true;
+    initFileRef = '__init__.py';
+  }
+  if (!hasInit) {
     findings.push({
       ruleId: 'APP001',
       severity: 'warning',
@@ -145,8 +156,8 @@ export function analyzeAppStructure(appPath, appName) {
   }
 
   // Check hooks.py
-  const hooksPath = path.join(appPath, 'hooks.py');
-  if (!fs.existsSync(hooksPath)) {
+  const hooksCheck = getAppFileExists(appPath, 'hooks.py');
+  if (!hooksCheck.exists) {
     findings.push({
       ruleId: 'APP002',
       severity: 'info',
@@ -159,8 +170,8 @@ export function analyzeAppStructure(appPath, appName) {
   }
 
   // Check modules.txt
-  const modulesPath = path.join(appPath, 'modules.txt');
-  if (!fs.existsSync(modulesPath)) {
+  const modulesCheck = getAppFileExists(appPath, 'modules.txt');
+  if (!modulesCheck.exists) {
     findings.push({
       ruleId: 'APP003',
       severity: 'info',

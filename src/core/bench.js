@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { resolveAppPackageDir, getAppFileExists } from './app-paths.js';
 
 export function isPlausibleBenchRoot(dirPath) {
   try {
@@ -148,15 +149,17 @@ export function inspectApp(benchRoot, appName) {
     if (fs.existsSync(appPath) && fs.statSync(appPath).isDirectory()) {
       result.hasDirectory = true;
 
-      // Check if it's a Python package (has __init__.py)
-      if (fs.existsSync(path.join(appPath, '__init__.py'))) {
+      const packageDir = resolveAppPackageDir(appPath);
+      // Check if it's a Python package (has __init__.py in resolved package dir)
+      if (packageDir && fs.existsSync(path.join(packageDir, '__init__.py'))) {
         result.isPythonPackage = true;
       }
 
-      // Check for common metadata files
+      // Check for common metadata files in package dir or root
       const metadataCandidates = ['hooks.py', 'modules.txt', 'pyproject.toml', 'setup.py', 'setup.cfg'];
       for (const metaFile of metadataCandidates) {
-        if (fs.existsSync(path.join(appPath, metaFile))) {
+        const check = getAppFileExists(appPath, metaFile);
+        if (check.exists) {
           result.metadataFiles.push(metaFile);
         }
       }
@@ -185,29 +188,34 @@ export function getAppVersion(benchRoot, appName) {
       return { version: 'unknown', source: null, note: 'App directory not found' };
     }
 
-    // Try to get version from __init__.py
-    const initPath = path.join(appPath, '__init__.py');
-    if (fs.existsSync(initPath)) {
-      try {
-        const initContent = fs.readFileSync(initPath, 'utf-8');
-        // Look for __version__ = "x.y.z" or __version__ = 'x.y.z'
-        const versionMatch = initContent.match(/__version__\s*=\s*['"]([^'"]+)['"]/);
-        if (versionMatch) {
-          return { version: versionMatch[1], source: 'apps/' + appName + '/__init__.py', note: null };
+    const packageDir = resolveAppPackageDir(appPath);
+
+    // Try to get version from resolved package __init__.py
+    if (packageDir) {
+      const initPath = path.join(packageDir, '__init__.py');
+      if (fs.existsSync(initPath)) {
+        try {
+          const initContent = fs.readFileSync(initPath, 'utf-8');
+          const versionMatch = initContent.match(/__version__\s*=\s*['"]([^'"]+)['"]/);
+          if (versionMatch) {
+            const relPath = path.relative(appPath, initPath);
+            return { version: versionMatch[1], source: 'apps/' + appName + '/' + relPath.replace(/\\/g, '/'), note: null };
+          }
+        } catch {
+          // Ignore read errors
         }
-      } catch {
-        // Ignore read errors
       }
     }
 
-    // Try pyproject.toml
-    const pyprojectPath = path.join(appPath, 'pyproject.toml');
-    if (fs.existsSync(pyprojectPath)) {
+    // Try pyproject.toml (root level preferred, but check both)
+    const pyprojectCheck = getAppFileExists(appPath, 'pyproject.toml');
+    if (pyprojectCheck.exists) {
       try {
-        const pyprojectContent = fs.readFileSync(pyprojectPath, 'utf-8');
+        const pyprojectContent = fs.readFileSync(pyprojectCheck.path, 'utf-8');
         const versionMatch = pyprojectContent.match(/version\s*=\s*['"]([^'"]+)['"]/);
         if (versionMatch) {
-          return { version: versionMatch[1], source: 'apps/' + appName + '/pyproject.toml', note: null };
+          const relPath = path.relative(appPath, pyprojectCheck.path);
+          return { version: versionMatch[1], source: 'apps/' + appName + '/' + relPath.replace(/\\/g, '/'), note: null };
         }
       } catch {
         // Ignore read errors
@@ -215,13 +223,14 @@ export function getAppVersion(benchRoot, appName) {
     }
 
     // Try setup.cfg
-    const setupCfgPath = path.join(appPath, 'setup.cfg');
-    if (fs.existsSync(setupCfgPath)) {
+    const setupCfgCheck = getAppFileExists(appPath, 'setup.cfg');
+    if (setupCfgCheck.exists) {
       try {
-        const setupCfgContent = fs.readFileSync(setupCfgPath, 'utf-8');
+        const setupCfgContent = fs.readFileSync(setupCfgCheck.path, 'utf-8');
         const versionMatch = setupCfgContent.match(/version\s*=\s*([^\s\n]+)/);
         if (versionMatch) {
-          return { version: versionMatch[1].replace(/['"]/g, ''), source: 'apps/' + appName + '/setup.cfg', note: null };
+          const relPath = path.relative(appPath, setupCfgCheck.path);
+          return { version: versionMatch[1].replace(/['"]/g, ''), source: 'apps/' + appName + '/' + relPath.replace(/\\/g, '/'), note: null };
         }
       } catch {
         // Ignore read errors

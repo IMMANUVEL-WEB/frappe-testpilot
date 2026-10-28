@@ -216,6 +216,21 @@ describe('frappe-testpilot Phase 2 - Bench discovery', () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('Bench root');
   });
+
+  it('should detect nested app layout (apps/ngo/ngo/) as python package', () => {
+    fs.mkdirSync(path.join(tmpDir, 'apps'));
+    fs.mkdirSync(path.join(tmpDir, 'sites'));
+    fs.mkdirSync(path.join(tmpDir, 'apps', 'ngo', 'ngo'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, 'apps', 'ngo', 'ngo', '__init__.py'), "__version__ = '1.2.3'\n");
+    fs.writeFileSync(path.join(tmpDir, 'apps', 'ngo', 'ngo', 'hooks.py'), '');
+    fs.writeFileSync(path.join(tmpDir, 'apps', 'ngo', 'ngo', 'modules.txt'), 'Ngo\n');
+    fs.writeFileSync(path.join(tmpDir, 'sites', 'apps.txt'), 'ngo\n');
+    const result = runCli(['inspect'], tmpDir);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('ngo');
+    expect(result.stdout).not.toContain('NOT FOUND in apps/');
+    expect(result.stdout).toContain('1.2.3');
+  });
 });
 
 describe('frappe-testpilot Phase 3 - Test command', () => {

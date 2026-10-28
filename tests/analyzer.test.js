@@ -5,13 +5,6 @@ import path from 'path';
 import os from 'os';
 import { createJunitReport } from '../src/core/reporters/junit-reporter.js';
 
-function parseXmlSimple(xml) {
-  // Simple validation - check well-formed structure
-  if (!xml.includes('<?xml')) throw new Error('No XML declaration');
-  if (!xml.includes('<testsuite')) throw new Error('No testsuite');
-  return { testsuite: {} };
-}
-
 const CLI_PATH = path.resolve(process.cwd(), 'src/index.js');
 
 function runCli(args = [], cwd = process.cwd()) {
@@ -197,6 +190,17 @@ describe('frappe-testpilot Phase 4 - Analyze command', () => {
     const result = runCli(['analyze', 'myapp', '--format', 'xml'], tmpDir);
     expect(result.status).not.toBe(0);
   });
+
+  it('analyzes nested app layout without APP001', () => {
+    setupBench();
+    fs.mkdirSync(path.join(tmpDir, 'apps', 'ngo', 'ngo'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, 'apps', 'ngo', 'ngo', '__init__.py'), "__version__ = '1.0.0'\n");
+    fs.writeFileSync(path.join(tmpDir, 'apps', 'ngo', 'ngo', 'hooks.py'), '');
+    fs.writeFileSync(path.join(tmpDir, 'apps', 'ngo', 'ngo', 'modules.txt'), 'Ngo\n');
+    const result = runCli(['analyze', 'ngo'], tmpDir);
+    expect(result.stdout).not.toContain('APP001');
+    expect(result.status).toBe(0);
+  });
 });
 
 describe('JUnit XML reporter robustness', () => {
@@ -218,7 +222,6 @@ describe('JUnit XML reporter robustness', () => {
     });
     expect(xml).not.toContain('\u001B');
     expect(xml).toContain('✔');
-    // Parse with Python's xml parser as a real parser
     const result = spawnSync('python3', ['-c', `import xml.etree.ElementTree as ET; ET.fromstring('''${xml.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}''')`], { encoding: 'utf-8' });
     expect(result.status).toBe(0);
   });
