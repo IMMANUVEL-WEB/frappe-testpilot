@@ -1,6 +1,6 @@
 {
   "name": "frappe-testpilot",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "CLI tool to help Frappe developers test custom apps before deploying them to production",
   "type": "module",
   "bin": {
