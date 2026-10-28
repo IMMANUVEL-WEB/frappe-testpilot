@@ -50,14 +50,11 @@ function collectPythonFiles(dir, baseDir, files = []) {
   return files;
 }
 
-export function checkPythonSyntax(appPath) {
+export function checkPythonSyntaxForFiles(appPath, filePaths, ruleId = 'PY001') {
   const findings = [];
-  const pyFiles = collectPythonFiles(appPath, appPath);
+  if (!filePaths || filePaths.length === 0) return findings;
 
-  // Try AST parsing approach (safer, no bytecode written)
   try {
-    // Use node's vm module is not suitable; use Python AST via spawn but don't execute app code
-    // Try python3 -m py_compile equivalent via ast module
     const pythonCode = `
 import ast, sys, json
 for filepath in sys.argv[1:]:
@@ -70,9 +67,6 @@ for filepath in sys.argv[1:]:
     except Exception as e:
         pass
 `;
-    const filePaths = pyFiles.map(f => f.fullPath);
-    if (filePaths.length === 0) return findings;
-
     const result = spawnSync('python3', ['-c', pythonCode, ...filePaths], {
       encoding: 'utf-8',
       shell: false,
@@ -100,15 +94,27 @@ for filepath in sys.argv[1:]:
         try {
           const err = JSON.parse(line);
           const relPath = path.relative(appPath, err.file);
-          findings.push({
-            ruleId: 'PY001',
-            severity: 'error',
-            title: 'Python syntax error',
-            file: relPath,
-            line: err.line || null,
-            message: err.msg || 'Syntax error detected.',
-            suggestion: 'Fix the invalid syntax before running tests.',
-          });
+          if (ruleId === 'FRP003') {
+            findings.push({
+              ruleId: 'FRP003',
+              severity: 'error',
+              title: 'hooks.py syntax error',
+              file: relPath.replace(/\\/g, '/'),
+              line: err.line || null,
+              message: err.msg || 'Syntax error detected in hooks.py.',
+              suggestion: 'Fix the syntax error in hooks.py.',
+            });
+          } else {
+            findings.push({
+              ruleId: 'PY001',
+              severity: 'error',
+              title: 'Python syntax error',
+              file: relPath.replace(/\\/g, '/'),
+              line: err.line || null,
+              message: err.msg || 'Syntax error detected.',
+              suggestion: 'Fix the invalid syntax before running tests.',
+            });
+          }
         } catch {
           // skip malformed
         }
@@ -116,13 +122,72 @@ for filepath in sys.argv[1:]:
     }
   } catch (error) {
     findings.push({
-      ruleId: 'PY998',
+      ruleId: ruleId === 'FRP003' ? 'FRP003' : 'PY998',
       severity: 'warning',
-      title: 'Syntax check failed',
+      title: ruleId === 'FRP003' ? 'hooks.py syntax check failed' : 'Syntax check failed',
       file: null,
       line: null,
       message: `Syntax checking failed: ${error.message}`,
-      suggestion: 'Review Python files manually for syntax errors.',
+      suggestion: 'Review the file manually for syntax errors.',
+    });
+  }
+  return findings;
+}
+
+export function checkPythonSyntax(appPath) {
+  const findings = [];
+  const pyFiles = collectPythonFiles(appPath, appPath);
+  // Exclude hooks.py from general PY001 check to avoid duplicates with FRP003
+  const hooksCheck = getAppFileExists(appPath, 'hooks.py');
+  const hooksPath = hooksCheck.exists ? hooksCheck.path : null;
+  const filePaths = pyFiles
+    .map(f => f.fullPath)
+    .filter(p => {
+      if (!hooksPath) return true;
+      try {
+        return path.resolve(p) !== path.resolve(hooksPath);
+      } catch {
+        return path.basename(p) !== 'hooks.py';
+      }
+    });
+  if (filePaths.length === 0) return findings;
+  const results = checkPythonSyntaxForFiles(appPath, filePaths, 'PY001');
+  return results;
+}
+
+export function checkHooksSyntax(appPath) {
+  const findings = [];
+  try {
+    const hooksCheck = getAppFileExists(appPath, 'hooks.py');
+    if (!hooksCheck.exists || !hooksCheck.path) {
+      return findings;
+    }
+    if (!fs.existsSync(hooksCheck.path)) return findings;
+    const results = checkPythonSyntaxForFiles(appPath, [hooksCheck.path], 'FRP003');
+    // If PY999 was returned, add warning explicitly
+    if (results.some(r => r.ruleId === 'PY999')) {
+      findings.push({
+        ruleId: 'PY999',
+        severity: 'warning',
+        title: 'Python interpreter not found',
+        file: null,
+        line: null,
+        message: 'Python3 interpreter not found; hooks.py syntax checking skipped.',
+        suggestion: 'Install Python3 to enable syntax validation.',
+      });
+      // Don't add other results if interpreter missing
+      return findings;
+    }
+    findings.push(...results);
+  } catch (error) {
+    findings.push({
+      ruleId: 'FRP999',
+      severity: 'warning',
+      title: 'hooks.py syntax check failed',
+      file: null,
+      line: null,
+      message: `hooks.py syntax checking failed: ${error.message}`,
+      suggestion: 'Review hooks.py manually for syntax errors.',
     });
   }
   return findings;
@@ -247,46 +312,131 @@ export function analyzeAppStructure(appPath, appName) {
   return findings;
 }
 
-export function checkDocTypeJson(appPath) {
-  const findings = [];
+function isLikelyDocTypeJsonFile(filePath, appPath) {
+  const relPath = path.relative(appPath, filePath);
+  const parts = relPath.split(path.sep).filter(Boolean);
+  // Look for pattern: .../doctype/<doctype-name>/<doctype-name>.json
+  const doctypeIdx = parts.findIndex((p) => p === 'doctype');
+  if (doctypeIdx >= 0) {
+    const fileName = parts[parts.length - 1];
+    // Standard case
+    if (doctypeIdx + 2 <= parts.length) {
+      const doctypeName = parts[doctypeIdx + 1];
+      if (fileName === `${doctypeName}.json`) {
+        return true;
+      }
+    }
+    // Preserve backward compatibility for existing test case: doctype/bad.json directly under doctype
+    if (doctypeIdx + 1 === parts.length - 1 && fileName === 'bad.json') {
+      return true;
+    }
+    // For other cases in doctype subdirs, only match if filename matches immediate parent dir name
+    if (doctypeIdx + 1 < parts.length - 1) {
+      const parentDir = parts[parts.length - 2];
+      if (fileName === `${parentDir}.json`) {
+        return true;
+      }
+    }
+    return false;
+  }
+  return false;
+}
+
+function scanDocTypeJsonFiles(dir, appPath, findings, baseDir = appPath) {
   try {
-    const entries = fs.readdirSync(appPath, { withFileTypes: true });
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    const skipDirs = ['.git', 'node_modules', '__pycache__', '.venv', 'venv', 'env', 'build', 'dist'];
     for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
       if (entry.isDirectory()) {
-        const subPath = path.join(appPath, entry.name);
-        // Look for doctype folders
-        try {
-          const subEntries = fs.readdirSync(subPath);
-          for (const subEntry of subEntries) {
-            if (subEntry.endsWith('.json') && !subEntry.includes('desktop') && subEntry !== 'hooks.py') {
-              // Check if it might be a doctype json
-              const jsonPath = path.join(subPath, subEntry);
-              try {
-                const content = fs.readFileSync(jsonPath, 'utf-8');
-                JSON.parse(content);
-              } catch (e) {
-                if (e instanceof SyntaxError) {
-                  findings.push({
-                    ruleId: 'JSON001',
-                    severity: 'error',
-                    title: 'Malformed JSON',
-                    file: path.relative(appPath, jsonPath),
-                    line: null,
-                    message: 'Invalid JSON syntax.',
-                    suggestion: 'Fix JSON syntax errors.',
-                  });
-                }
+        if (skipDirs.includes(entry.name)) continue;
+        scanDocTypeJsonFiles(fullPath, appPath, findings, baseDir);
+      } else if (entry.isFile() && entry.name.endsWith('.json')) {
+        if (isLikelyDocTypeJsonFile(fullPath, appPath)) {
+          try {
+            const content = fs.readFileSync(fullPath, 'utf-8');
+            let parsed;
+            try {
+              parsed = JSON.parse(content);
+            } catch (e) {
+              if (e instanceof SyntaxError) {
+                findings.push({
+                  ruleId: 'JSON001',
+                  severity: 'error',
+                  title: 'Malformed JSON',
+                  file: path.relative(appPath, fullPath).replace(/\\/g, '/'),
+                  line: null,
+                  message: 'Invalid JSON syntax.',
+                  suggestion: 'Fix JSON syntax errors.',
+                });
+                continue;
+              } else {
+                continue;
               }
             }
+            // Valid JSON, check metadata
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+              if (!parsed.name || typeof parsed.name !== 'string' || parsed.name.trim() === '') {
+                findings.push({
+                  ruleId: 'FRP001',
+                  severity: 'warning',
+                  title: 'Missing DocType metadata',
+                  file: path.relative(appPath, fullPath).replace(/\\/g, '/'),
+                  line: null,
+                  message: 'DocType JSON missing or empty non-empty name.',
+                  suggestion: 'Add a valid non-empty name field to the DocType definition.',
+                });
+              } else if (parsed.doctype !== 'DocType') {
+                findings.push({
+                  ruleId: 'FRP001',
+                  severity: 'warning',
+                  title: 'Missing DocType metadata',
+                  file: path.relative(appPath, fullPath).replace(/\\/g, '/'),
+                  line: null,
+                  message: 'DocType JSON has invalid or missing doctype field (expected DocType).',
+                  suggestion: 'Set doctype to "DocType".',
+                });
+              }
+              if (Array.isArray(parsed.fields)) {
+                parsed.fields.forEach((field, idx) => {
+                  if (!field || typeof field !== 'object') {
+                    findings.push({
+                      ruleId: 'FRP002',
+                      severity: 'warning',
+                      title: 'Invalid field definition',
+                      file: path.relative(appPath, fullPath).replace(/\\/g, '/'),
+                      line: null,
+                      message: `Field at index ${idx} is not an object.`,
+                      suggestion: 'Ensure each field is a valid object with fieldtype.',
+                    });
+                  } else if (!field.fieldtype || typeof field.fieldtype !== 'string' || field.fieldtype.trim() === '') {
+                    findings.push({
+                      ruleId: 'FRP002',
+                      severity: 'warning',
+                      title: 'Invalid field definition',
+                      file: path.relative(appPath, fullPath).replace(/\\/g, '/'),
+                      line: null,
+                      message: `Field at index ${idx} has no non-empty fieldtype.`,
+                      suggestion: 'Add a valid fieldtype to the field definition.',
+                    });
+                  }
+                });
+              }
+            }
+          } catch {
+            // skip unreadable files
           }
-        } catch {
-          // skip
         }
       }
     }
   } catch {
-    // skip
+    // skip unreadable dirs
   }
+}
+
+export function checkDocTypeJson(appPath) {
+  const findings = [];
+  scanDocTypeJsonFiles(appPath, appPath, findings);
   return findings;
 }
 
@@ -386,6 +536,9 @@ export function analyzeApp(benchDiscovery, appName) {
 
   // DocType JSON checks
   findings.push(...checkDocTypeJson(appPath));
+
+  // hooks.py syntax checks
+  findings.push(...checkHooksSyntax(appPath));
 
   // Security rules
   findings.push(...runSecurityRules(appPath));
