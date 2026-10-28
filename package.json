@@ -4,7 +4,7 @@
   "description": "CLI tool to help Frappe developers test custom apps before deploying them to production",
   "type": "module",
   "bin": {
-    "frappe-testpilot": "./src/index.js"
+    "frappe-testpilot": "src/index.js"
   },
   "scripts": {
     "dev": "node src/index.js",
